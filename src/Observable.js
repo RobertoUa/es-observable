@@ -113,49 +113,61 @@ export class Observable {
         this._init = init;
     }
 
-    subscribe(observer) {
+    [Symbol.observe](observer) {
 
         // The sink must be an object
         if (Object(observer) !== observer)
             throw new TypeError("Observer must be an object");
 
         let sink = new ObserverSink(observer),
-            aborted = false,
             stop;
 
-        enqueueSubscription(_=> {
+        try {
 
-            try {
+            // Call the stream initializer
+            stop = this._init.call(undefined, sink);
 
-                // Call the stream initializer
-                stop = this._init.call(undefined, sink);
+            // If the return value is null or undefined, then use a default stop function
+            if (stop == null)
+                stop = (_=> sink.return());
+            else if (typeof stop !== "function")
+                throw new TypeError(stop + " is not a function");
 
-                // If the return value is null or undefined, then use a default stop function
-                if (stop == null)
-                    stop = (_=> sink.return());
-                else if (typeof stop !== "function")
-                    throw new TypeError(stop + " is not a function");
+        } catch (e) {
 
-            } catch (e) {
+            // If an error occurs during startup, then attempt to send the error
+            // to the sink
+            sink.throw(e);
+        }
 
-                // If an error occurs during startup, then attempt to send the error
-                // to the sink
-                sink.throw(e);
-            }
+        sink._stop = stop;
 
-            sink._stop = stop;
-
-            // If the stream is already finished, then perform cleanup
-            if (sink._done || aborted)
-                sink._close();
-        });
+        // If the stream is already finished, then perform cleanup
+        if (sink._done)
+            sink._close();
 
         // Return a cancellation function.  The default cancellation function
         // will simply call return on the observer.
+        return _=> { sink._close() };
+    }
+
+    subscribe(observer) {
+
+        let abort = false,
+            cancel;
+
+        enqueueSubscription(_ => {
+
+            cancel = this[Symbol.observe](observer);
+
+            if (abort)
+                cancel();
+        });
+
         return _=> {
 
-            if (sink) sink._close();
-            else aborted = true;
+            if (cancel) cancel();
+            else abort = true;
         };
     }
 
@@ -215,5 +227,12 @@ export class Observable {
     [Symbol.observable]() { return this }
 
     static get [Symbol.species]() { return this }
+
+    static from(observable) {
+
+        // TODO:  If observable is an instance of the Observable nominal type,
+        // then return it.
+        return new this[Symbol.species](sink => observable[Symbol.observe](sink));
+    }
 
 }
